@@ -125,7 +125,7 @@ def decode_silent_payment_address(address: str, hrp: str = "tsp") -> Tuple[GE, G
     return B_scan, B_spend
 
 
-def create_outputs(input_priv_keys: List[Tuple[Scalar, bool]], outpoints: List[COutPoint], recipients: List[str], expected: Dict[str, any] = None, hrp="tsp") -> List[str]:
+def create_outputs(input_priv_keys: List[Tuple[Scalar, bool]], outpoints: List[COutPoint], recipients: List[Dict[str, str]], expected: Dict[str, any] = None, hrp="tsp") -> List[str]:
     negated_keys = []
     for key, is_xonly in input_priv_keys:
         k = Scalar.from_bytes_checked(key.to_bytes())
