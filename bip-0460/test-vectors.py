@@ -28,11 +28,10 @@ import halfagg
 import fullagg
 
 # Marker bytes
-MARKER_OPTOUT = 0xBB
 MARKER_HALFAGG = 0xBC
 MARKER_FULLAGG = 0xBD
 
-# Sighash epoch for witness v2 signature messages
+# Sighash epoch for aggregated witness v2 signature messages
 SIGHASH_EPOCH = 0x01
 
 SIGHASH_DEFAULT = 0x00
@@ -261,10 +260,16 @@ def sigmsg_v1(tx, spent_utxos, input_index, hash_type, annex=None):
 # ---------------------------------------------------------------------------
 
 def marker_element(marker, hash_type=SIGHASH_DEFAULT, sig=b""):
-    element = bytes([marker])
+    element = sig
     if hash_type != SIGHASH_DEFAULT:
         element += bytes([hash_type])
-    return element + sig
+    return element + bytes([marker])
+
+
+def optout_element(sig, hash_type=SIGHASH_DEFAULT):
+    if hash_type == SIGHASH_DEFAULT:
+        return sig
+    return sig + bytes([hash_type])
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +318,7 @@ def test_offcurve_x(label):
 # ---------------------------------------------------------------------------
 
 def sign_optout(tx, utxos, idx, tweaked_seckey, hash_type):
-    m = sigmsg_v2(tx, utxos, idx, hash_type, MARKER_OPTOUT)
+    m = sigmsg_v1(tx, utxos, idx, hash_type)
     sig = schnorr_sign(m, tweaked_seckey, AUX_ZERO)
     return m, sig
 
@@ -338,7 +343,8 @@ def sign_fullagg_group(tx, utxos, members, msg_mode=MARKER_FULLAGG,
                        nonce_offset=0):
     """members: list of (input_index, tweaked_seckey, hash_type).
     msg_mode overrides the marker committed in the signature messages,
-    used by negative vectors exercising the mode commitment.
+    with None selecting the plain BIP 341 message, used by negative
+    vectors exercising the mode commitment.
     nonce_offset varies the deterministic test nonces between sessions.
     Returns (msgs, secnonces, pubnonces, sig64)."""
     pks = []
@@ -346,7 +352,10 @@ def sign_fullagg_group(tx, utxos, members, msg_mode=MARKER_FULLAGG,
     secnonces = []
     pubnonces = []
     for i, (idx, sk, ht) in enumerate(members):
-        m = sigmsg_v2(tx, utxos, idx, ht, msg_mode)
+        if msg_mode is None:
+            m = sigmsg_v1(tx, utxos, idx, ht)
+        else:
+            m = sigmsg_v2(tx, utxos, idx, ht, msg_mode)
         msgs.append(m)
         pks.append(GE.from_bytes_xonly(utxos[idx].script_pubkey[2:]))
         secnonce, pubnonce = test_fullagg_secnonce(i + nonce_offset)
@@ -408,7 +417,7 @@ def make_wallet_vectors():
     msgs, _, aggsig = sign_halfagg_group(
         tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT), (2, keys[2][2], SIGHASH_DEFAULT)]
     )
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT, SIGHASH_ALL, sig0)]
+    tx.witnesses[0] = [optout_element(sig0, SIGHASH_ALL)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG)]
     tx.witnesses[2] = [marker_element(MARKER_HALFAGG, sig=aggsig)]
 
@@ -427,7 +436,7 @@ def make_wallet_vectors():
         "expected": {"rawSignedTx": hexlify(tx.serialize_signed())},
     }
     input_data = [
-        (0, MARKER_OPTOUT, SIGHASH_ALL, m0),
+        (0, None, SIGHASH_ALL, m0),
         (1, MARKER_HALFAGG, SIGHASH_DEFAULT, msgs[0]),
         (2, MARKER_HALFAGG, SIGHASH_DEFAULT, msgs[1]),
     ]
@@ -437,7 +446,7 @@ def make_wallet_vectors():
                 "given": {
                     "txinIndex": idx,
                     "internalPrivkey": hexlify(test_seckey(idx)),
-                    "marker": f"0x{marker:02x}",
+                    "marker": None if marker is None else f"0x{marker:02x}",
                     "hashType": ht,
                 },
                 "intermediary": {
@@ -601,14 +610,15 @@ def make_consensus_vectors():
         )
         return keys, utxos, tx
 
-    # 1: valid two-member half-aggregation group
+    # 1: valid two-member half-aggregation group with explicit sighash
+    # forms
     keys, utxos, tx = fresh_setup(2)
     _, _, aggsig = sign_halfagg_group(
-        tx, utxos, [(0, keys[0][2], SIGHASH_DEFAULT), (1, keys[1][2], SIGHASH_DEFAULT)]
+        tx, utxos, [(0, keys[0][2], SIGHASH_ALL), (1, keys[1][2], SIGHASH_ALL)]
     )
-    tx.witnesses[0] = [marker_element(MARKER_HALFAGG)]
-    tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=aggsig)]
-    add_case("halfagg-valid", "Two-member half-aggregation group, SIGHASH_DEFAULT",
+    tx.witnesses[0] = [marker_element(MARKER_HALFAGG, SIGHASH_ALL)]
+    tx.witnesses[1] = [marker_element(MARKER_HALFAGG, SIGHASH_ALL, aggsig)]
+    add_case("halfagg-valid", "Two-member half-aggregation group, SIGHASH_ALL",
              tx, utxos, True)
     halfagg_base = (keys, utxos, tx, aggsig)
 
@@ -629,7 +639,7 @@ def make_consensus_vectors():
     _, _, aggsig3 = sign_halfagg_group(
         tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT), (2, keys[2][2], SIGHASH_DEFAULT)]
     )
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT, sig=sig0)]
+    tx.witnesses[0] = [optout_element(sig0)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG)]
     tx.witnesses[2] = [marker_element(MARKER_HALFAGG, sig=aggsig3)]
     add_case("mixed-valid",
@@ -638,20 +648,20 @@ def make_consensus_vectors():
 
     # 4: invalid, undefined marker byte
     keys, utxos, tx = fresh_setup(3, key_offset=6)
-    tx.witnesses[0] = [bytes([0xBE]) + sig0]
+    tx.witnesses[0] = [bytes([0xBB])]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG)]
     tx.witnesses[2] = [marker_element(MARKER_HALFAGG, sig=aggsig3)]
-    add_case("marker-undefined", "Witness element starts with the undefined "
-             "marker byte 0xbe", tx, utxos, False,
+    add_case("marker-undefined", "1-byte witness element with the undefined "
+             "marker value 0xbb", tx, utxos, False,
              "undefined marker byte")
 
-    # 5: invalid, explicit 0x00 sighash byte
+    # 5: invalid, explicit 0x00 sighash byte in a placeholder
     keys, utxos, tx = fresh_setup(3, key_offset=6)
-    tx.witnesses[0] = [bytes([MARKER_OPTOUT, 0x00]) + sig0]
-    tx.witnesses[1] = [marker_element(MARKER_HALFAGG)]
+    tx.witnesses[0] = [optout_element(sig0)]
+    tx.witnesses[1] = [bytes([0x00, MARKER_HALFAGG])]
     tx.witnesses[2] = [marker_element(MARKER_HALFAGG, sig=aggsig3)]
-    add_case("sighash-explicit-default", "Opted-out input encodes "
-             "SIGHASH_DEFAULT explicitly as a 0x00 sighash byte",
+    add_case("placeholder-explicit-default", "Half-aggregation placeholder "
+             "encodes SIGHASH_DEFAULT explicitly as a 0x00 sighash byte",
              tx, utxos, False, "explicit 0x00 sighash byte")
 
     # 6: invalid, aggregation group without final signature
@@ -679,21 +689,22 @@ def make_consensus_vectors():
     # so the aggregate signature from that case corresponds to this tx.
     _, _, _, aggsig = halfagg_base
     keys, utxos, tx = fresh_setup(2)
-    tx.witnesses[0] = [marker_element(MARKER_HALFAGG)]
-    tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=aggsig + bytes(32))]
+    tx.witnesses[0] = [marker_element(MARKER_HALFAGG, SIGHASH_ALL)]
+    tx.witnesses[1] = [marker_element(MARKER_HALFAGG, SIGHASH_ALL,
+                                      aggsig + bytes(32))]
     add_case("aggsig-size-mismatch", "Aggregate signature is 128 bytes for a "
              "two-member half-aggregation group (expected 96)", tx, utxos,
              False, "aggregate signature size mismatch")
 
     # 9: invalid, cross-mode fold (mode commitment)
-    # Signatures are created over the opt-out flavored message and then
-    # packaged as a half-aggregation group. The group structure is well
-    # formed but aggregate verification fails because the signature
-    # message commits to the aggregation mode.
+    # Opted-out signatures over the plain BIP 341 message are packaged
+    # as a half-aggregation group. The group structure is well formed
+    # but aggregate verification fails because the group messages commit
+    # to the aggregation mode.
     keys, utxos, tx = fresh_setup(2, key_offset=12)
     triples = []
     for idx in range(2):
-        m_optout = sigmsg_v2(tx, utxos, idx, SIGHASH_DEFAULT, MARKER_OPTOUT)
+        m_optout = sigmsg_v1(tx, utxos, idx, SIGHASH_DEFAULT)
         sig = schnorr_sign(m_optout, keys[idx][2], AUX_ZERO)
         pk = utxos[idx].script_pubkey[2:]
         triples.append((pk, m_optout, sig))
@@ -706,35 +717,47 @@ def make_consensus_vectors():
     assert not halfagg.VerifyAggregate(aggsig9, consensus_msgs)
     tx.witnesses[0] = [marker_element(MARKER_HALFAGG)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=aggsig9)]
-    add_case("cross-mode-fold", "Opt-out flavored signatures folded into a "
+    add_case("cross-mode-fold", "Opted-out signatures folded into a "
              "half-aggregation group by a third party", tx, utxos, False,
-             "aggregate signature invalid, messages commit to opt-out mode")
+             "aggregate signature invalid, messages commit to the "
+             "aggregation mode")
 
     # 10: invalid, empty witness
     keys, utxos, tx = fresh_setup(2)
     _, sig1 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = []
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1)]
+    tx.witnesses[1] = [optout_element(sig1)]
     add_case("empty-witness", "Witness v2 input with an empty witness",
              tx, utxos, False, "empty witness")
 
-    # 11: invalid, opt-out marker without a signature
+    # 11: invalid, explicit 0x00 sighash byte on an opted-out signature.
+    # Complements case 5, which covers the marked form.
     keys, utxos, tx = fresh_setup(2)
+    _, sig0 = sign_optout(tx, utxos, 0, keys[0][2], SIGHASH_DEFAULT)
     _, sig1 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [bytes([MARKER_OPTOUT])]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1)]
-    add_case("optout-no-sig", "Opt-out marker as a 1-byte witness element "
-             "without a signature", tx, utxos, False,
-             "opt-out marker without signature")
+    tx.witnesses[0] = [sig0 + bytes([0x00])]
+    tx.witnesses[1] = [optout_element(sig1)]
+    add_case("optout-explicit-default", "Opted-out input encodes "
+             "SIGHASH_DEFAULT explicitly as a 0x00 sighash byte",
+             tx, utxos, False, "explicit 0x00 sighash byte")
 
-    # 12: invalid, opt-out marker with sighash byte but without a signature
+    # 12: valid, opted-out 64-byte signature ending in the marker byte
+    # 0xbc, ground via the auxiliary randomness
     keys, utxos, tx = fresh_setup(2)
+    m0 = sigmsg_v1(tx, utxos, 0, SIGHASH_DEFAULT)
+    aux_i = 0
+    while True:
+        aux = tagged_hash("CISA/test/aux", aux_i.to_bytes(2, "little"))
+        sig0 = schnorr_sign(m0, keys[0][2], aux)
+        if sig0[63] == MARKER_HALFAGG:
+            break
+        aux_i += 1
     _, sig1 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [bytes([MARKER_OPTOUT, SIGHASH_ALL])]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1)]
-    add_case("optout-sighash-no-sig", "Opt-out marker with an explicit "
-             "sighash byte but without a signature", tx, utxos, False,
-             "opt-out marker without signature")
+    tx.witnesses[0] = [optout_element(sig0)]
+    tx.witnesses[1] = [optout_element(sig1)]
+    add_case("optout-sig-ends-in-marker", "Opted-out 64-byte signature "
+             "whose last byte equals the half-aggregation marker 0xbc",
+             tx, utxos, True)
 
     # 13: valid, half-aggregation group member carrying a signed annex
     keys, utxos, tx = fresh_setup(2, key_offset=15)
@@ -786,13 +809,13 @@ def make_consensus_vectors():
     assert schnorr_verify(m_script, script_pk, sig_script)
     _, sig1 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [sig_script, script, control]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1)]
+    tx.witnesses[1] = [optout_element(sig1)]
     add_case("scriptpath-valid", "Witness v2 script path spend of a single "
              "CHECKSIG leaf under BIP 341/342 rules, alongside an opted-out "
              "key path input", tx, utxos, True)
 
     # 16: invalid, cross-mode messages in a full-aggregation group
-    # The signers run a full-aggregation session over opt-out flavored
+    # The signers run a full-aggregation session over plain BIP 341
     # messages and the result is placed in a 0xbd witness. Unlike case 9
     # there is no public fold operation for full-agg, this checks that
     # verifiers derive the messages with the 0xbd marker on this path too.
@@ -800,7 +823,7 @@ def make_consensus_vectors():
     _, _, _, sig64_16 = sign_fullagg_group(
         tx, utxos,
         [(0, keys[0][2], SIGHASH_DEFAULT), (1, keys[1][2], SIGHASH_DEFAULT)],
-        msg_mode=MARKER_OPTOUT,
+        msg_mode=None,
     )
     pks16 = [GE.from_bytes_xonly(u.script_pubkey[2:]) for u in utxos]
     consensus_msgs16 = [
@@ -812,9 +835,10 @@ def make_consensus_vectors():
     tx.witnesses[0] = [marker_element(MARKER_FULLAGG)]
     tx.witnesses[1] = [marker_element(MARKER_FULLAGG, sig=sig64_16)]
     add_case("cross-mode-fullagg", "Full-aggregation signature created over "
-             "opt-out flavored messages, placed in a full-aggregation group",
+             "plain BIP 341 messages, placed in a full-aggregation group",
              tx, utxos, False,
-             "aggregate signature invalid, messages commit to opt-out mode")
+             "aggregate signature invalid, messages commit to the "
+             "aggregation mode")
 
     # 17: invalid, 97-byte 0xbd element (half-agg sized aggregate in the
     # full-agg final slot). Marker 0xbd admits lengths 1, 2, 65 and 66
@@ -825,9 +849,9 @@ def make_consensus_vectors():
     _, _, _, sig64 = fullagg_base
     keys, utxos, tx = fresh_setup(2, key_offset=3)
     tx.witnesses[0] = [marker_element(MARKER_FULLAGG, SIGHASH_ALL)]
-    tx.witnesses[1] = [bytes([MARKER_FULLAGG]) + sig64 + bytes(32)]
+    tx.witnesses[1] = [marker_element(MARKER_FULLAGG, sig=sig64 + bytes(32))]
     add_case("fullagg-size-mismatch", "Full-aggregation final input carries "
-             "96 bytes after the marker (97-byte 0xbd element, matches no "
+             "96 bytes before the marker (97-byte 0xbd element, matches no "
              "defined witness structure)", tx, utxos, False,
              "marker and length match no defined structure")
 
@@ -852,14 +876,13 @@ def make_consensus_vectors():
         [(2, keys[2][2], SIGHASH_DEFAULT), (3, keys[3][2], SIGHASH_DEFAULT),
          (6, keys[6][2], SIGHASH_DEFAULT)],
     )
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT, sig=sig0)]
+    tx.witnesses[0] = [optout_element(sig0)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG, SIGHASH_SINGLE)]
     tx.witnesses[2] = [marker_element(MARKER_FULLAGG)]
     tx.witnesses[3] = [marker_element(MARKER_FULLAGG)]
     tx.witnesses[4] = [marker_element(MARKER_HALFAGG, sig=aggsig18)]
-    tx.witnesses[5] = [marker_element(MARKER_OPTOUT,
-                                      SIGHASH_NONE | SIGHASH_ANYONECANPAY,
-                                      sig5)]
+    tx.witnesses[5] = [optout_element(sig5,
+                                      SIGHASH_NONE | SIGHASH_ANYONECANPAY)]
     tx.witnesses[6] = [marker_element(MARKER_FULLAGG, sig=sig64_18)]
     add_case("two-groups-valid", "Mixed transaction mirroring Example 4 of "
              "the BIP: two opted-out inputs, a half-aggregation group with "
@@ -875,10 +898,10 @@ def make_consensus_vectors():
     # the missing corresponding output.
     keys, utxos, tx = fresh_setup(2, key_offset=31)
     _, sig0 = sign_optout(tx, utxos, 0, keys[0][2], SIGHASH_DEFAULT)
-    m_all = sigmsg_v2(tx, utxos, 1, SIGHASH_ALL, MARKER_OPTOUT)
+    m_all = sigmsg_v1(tx, utxos, 1, SIGHASH_ALL)
     sig1_19 = schnorr_sign(m_all, keys[1][2], AUX_ZERO)
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT, sig=sig0)]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, SIGHASH_SINGLE, sig1_19)]
+    tx.witnesses[0] = [optout_element(sig0)]
+    tx.witnesses[1] = [optout_element(sig1_19, SIGHASH_SINGLE)]
     add_case("sighash-single-no-output", "Opted-out input uses "
              "SIGHASH_SINGLE at input index 1 of a single-output "
              "transaction", tx, utxos, False,
@@ -893,7 +916,7 @@ def make_consensus_vectors():
     _, _, agg_b = sign_halfagg_group(tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT)])
     tx.witnesses[0] = [marker_element(MARKER_HALFAGG, sig=agg_a)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=agg_b)]
-    add_case("halfagg-two-finals", "Two inputs each carrying a 64-byte "
+    add_case("halfagg-two-finals", "Two inputs each carrying a 65-byte "
              "half-aggregation final element", tx, utxos, False,
              "more than one final input in a group")
 
@@ -905,7 +928,7 @@ def make_consensus_vectors():
         tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT)], nonce_offset=11)
     tx.witnesses[0] = [marker_element(MARKER_FULLAGG, sig=sig_a)]
     tx.witnesses[1] = [marker_element(MARKER_FULLAGG, sig=sig_b)]
-    add_case("fullagg-two-finals", "Two inputs each carrying a 64-byte "
+    add_case("fullagg-two-finals", "Two inputs each carrying a 65-byte "
              "full-aggregation final element", tx, utxos, False,
              "more than one final input in a group")
 
@@ -932,14 +955,16 @@ def make_consensus_vectors():
              "after the group's final input", tx, utxos, False,
              "marker after group final")
 
-    # 24: valid, single-member half-aggregation group. The aggregate is
-    # (1+1)*32 = 64 bytes, the same size as an opted-out signature.
+    # 24: valid, single-member half-aggregation group. The 65-byte
+    # element matches an explicit sighash opted-out signature in length
+    # and is distinguished by its 0xbc last byte.
     keys, utxos, tx = fresh_setup(1, key_offset=43)
     _, _, aggsig24 = sign_halfagg_group(
         tx, utxos, [(0, keys[0][2], SIGHASH_DEFAULT)])
     tx.witnesses[0] = [marker_element(MARKER_HALFAGG, sig=aggsig24)]
     add_case("halfagg-single-member", "Half-aggregation group with a single "
-             "member carrying a 64-byte aggregate", tx, utxos, True)
+             "member carrying a 64-byte aggregate in a 65-byte element",
+             tx, utxos, True)
 
     # 25: valid, single-member full-aggregation group
     keys, utxos, tx = fresh_setup(1, key_offset=44)
@@ -951,14 +976,15 @@ def make_consensus_vectors():
 
     # 26: invalid, single witness element starting with the annex prefix.
     # An annex requires at least two witness elements, so this parses as
-    # a key path element with the undefined marker byte 0x50.
+    # a key path element that matches no defined structure.
     keys, utxos, tx = fresh_setup(2, key_offset=45)
     _, sig1_26 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [bytes([0x50]) + b"CISA annex test"]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_26)]
+    tx.witnesses[1] = [optout_element(sig1_26)]
     add_case("annex-lookalike", "Single witness element starting with the "
              "annex prefix 0x50", tx, utxos, False,
-             "undefined marker byte, a single element is never an annex")
+             "matches no defined structure, a single element is never "
+             "an annex")
 
     # 27: valid, annex on the final input of a group. The annex must be
     # stripped before the final element is interpreted. Complements case
@@ -980,15 +1006,16 @@ def make_consensus_vectors():
              "carries an annex that is committed in its signature message",
              tx, utxos, True)
 
-    # 28: invalid, undefined sighash value. Case 5 covers the explicit
-    # 0x00 encoding rule, this covers a value outside the defined set.
-    # The signature bytes are irrelevant, parsing fails first.
+    # 28: invalid, undefined sighash value. Cases 5 and 11 cover the
+    # explicit 0x00 encoding rule, this covers a value outside the
+    # defined set. The signature bytes are irrelevant, parsing fails
+    # first.
     keys, utxos, tx = fresh_setup(2, key_offset=49)
-    m0_28 = sigmsg_v2(tx, utxos, 0, SIGHASH_DEFAULT, MARKER_OPTOUT)
+    m0_28 = sigmsg_v1(tx, utxos, 0, SIGHASH_DEFAULT)
     sig0_28 = schnorr_sign(m0_28, keys[0][2], AUX_ZERO)
     _, sig1_28 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [bytes([MARKER_OPTOUT, 0x04]) + sig0_28]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_28)]
+    tx.witnesses[0] = [sig0_28 + bytes([0x04])]
+    tx.witnesses[1] = [optout_element(sig1_28)]
     add_case("sighash-value-undefined", "Opted-out input with the undefined "
              "sighash value 0x04", tx, utxos, False,
              "undefined sighash type")
@@ -1001,7 +1028,7 @@ def make_consensus_vectors():
     _, sig0_29 = sign_optout(tx, utxos, 0, keys[0][2], SIGHASH_DEFAULT)
     _, _, agg29 = sign_halfagg_group(
         tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT)])
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT, sig=sig0_29)]
+    tx.witnesses[0] = [optout_element(sig0_29)]
     tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=agg29[:32])]
     add_case("halfagg-final-too-small", "33-byte 0xbc element, below the "
              "65-byte minimum for a half-aggregation final", tx, utxos,
@@ -1015,7 +1042,7 @@ def make_consensus_vectors():
     utxos[0] = TxOut(100_000_000, bytes([0x52, 0x21]) + program33)
     _, sig1_30 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [bytes([0xBE])]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_30)]
+    tx.witnesses[1] = [optout_element(sig1_30)]
     add_case("program-not-32-bytes", "Witness v2 output with a 33-byte "
              "witness program spent with an arbitrary witness", tx, utxos,
              True)
@@ -1026,9 +1053,8 @@ def make_consensus_vectors():
     utxos[0] = TxOut(100_000_000,
                      bytes([0x52, 0x20]) + test_offcurve_x(b"optout"))
     _, sig1_31 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [marker_element(MARKER_OPTOUT,
-                                      sig=test_garbage(b"offcurve sig", 64))]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_31)]
+    tx.witnesses[0] = [optout_element(test_garbage(b"offcurve sig", 64))]
+    tx.witnesses[1] = [optout_element(sig1_31)]
     add_case("program-offcurve-optout", "Opted-out input whose witness "
              "program is not a valid x-only public key", tx, utxos, False,
              "witness program is not a valid x-only public key")
@@ -1069,18 +1095,18 @@ def make_consensus_vectors():
     utxos[0] = TxOut(100_000_000, v2_script_pubkey(Q33.to_bytes_xonly()))
     _, sig1_33 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [script33, control33]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_33)]
+    tx.witnesses[1] = [optout_element(sig1_33)]
     add_case("scriptpath-unknown-leaf-version", "Witness v2 script path "
              "spend with unknown leaf version 0xc2, which succeeds "
              "unconditionally per BIP 341", tx, utxos, True)
 
     # 34: valid, script path leaf containing an OP_SUCCESS opcode. The
-    # script byte 0xbb is OP_SUCCESS187 in tapscript and has no marker
+    # script byte 0xbc is OP_SUCCESS188 in tapscript and has no marker
     # meaning inside a script.
     keys, utxos, tx = fresh_setup(2, key_offset=61)
     internal_seckey34 = test_seckey(201)
     internal_x34 = (Scalar.from_bytes_checked(internal_seckey34) * G).to_bytes_xonly()
-    script34 = bytes([0xBB])
+    script34 = bytes([MARKER_HALFAGG])
     leaf34 = tagged_hash(
         "TapLeaf", bytes([0xC0]) + ser_compact_size(len(script34)) + script34)
     t34 = Scalar.from_bytes_checked(tagged_hash("TapTweak", internal_x34 + leaf34))
@@ -1089,9 +1115,9 @@ def make_consensus_vectors():
     utxos[0] = TxOut(100_000_000, v2_script_pubkey(Q34.to_bytes_xonly()))
     _, sig1_34 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [script34, control34]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_34)]
+    tx.witnesses[1] = [optout_element(sig1_34)]
     add_case("scriptpath-op-success", "Witness v2 script path spend whose "
-             "leaf script is OP_SUCCESS187 (byte 0xbb), which succeeds "
+             "leaf script is OP_SUCCESS188 (byte 0xbc), which succeeds "
              "unconditionally per BIP 342", tx, utxos, True)
 
     # 35: valid, mixed witness v1 and v2 transaction mirroring Example 3
@@ -1135,7 +1161,7 @@ def make_consensus_vectors():
     keys, utxos, tx = fresh_setup(2, key_offset=68)
     _, sig1_37 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [b""]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_37)]
+    tx.witnesses[1] = [optout_element(sig1_37)]
     add_case("empty-witness-element", "Witness v2 input whose only witness "
              "element is empty", tx, utxos, False, "empty witness element")
 
@@ -1163,30 +1189,30 @@ def make_consensus_vectors():
     # With two elements and no annex prefix this is a script path spend,
     # and the 1-byte last element is not a valid control block.
     keys, utxos, tx = fresh_setup(2, key_offset=72)
-    m0_39 = sigmsg_v2(tx, utxos, 0, SIGHASH_DEFAULT, MARKER_OPTOUT)
+    m0_39 = sigmsg_v1(tx, utxos, 0, SIGHASH_DEFAULT)
     sig0_39 = schnorr_sign(m0_39, keys[0][2], AUX_ZERO)
     _, sig1_39 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [bytes([MARKER_OPTOUT]) + sig0_39, bytes([0x60])]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_39)]
+    tx.witnesses[0] = [sig0_39, bytes([0x60])]
+    tx.witnesses[1] = [optout_element(sig1_39)]
     add_case("two-elements-no-annex", "Keypath-looking element followed by "
              "a second element that is not an annex, making this a script "
              "path spend with an invalid control block", tx, utxos, False,
              "invalid control block size")
 
-    # 40: invalid, marker-less v1-style spend of a witness v2 output. The
-    # witness is a bare 64-byte signature over the BIP 341 witness v1
-    # message, as produced by a wallet that treats v2 outputs like Taproot.
-    # The first byte of the signature is not a defined marker.
+    # 40: invalid, half-aggregation flavored signature placed as a bare
+    # 64-byte opted-out element
     keys, utxos, tx = fresh_setup(2, key_offset=74)
-    m0_40 = sigmsg_v1(tx, utxos, 0, SIGHASH_DEFAULT)
-    sig0_40 = schnorr_sign(m0_40, keys[0][2], AUX_ZERO)
-    assert sig0_40[0] not in (MARKER_OPTOUT, MARKER_HALFAGG, MARKER_FULLAGG)
+    m0_agg = sigmsg_v2(tx, utxos, 0, SIGHASH_DEFAULT, MARKER_HALFAGG)
+    sig0_40 = schnorr_sign(m0_agg, keys[0][2], AUX_ZERO)
+    m0_plain = sigmsg_v1(tx, utxos, 0, SIGHASH_DEFAULT)
+    assert not schnorr_verify(m0_plain, utxos[0].script_pubkey[2:], sig0_40)
     _, sig1_40 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
-    tx.witnesses[0] = [sig0_40]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_40)]
-    add_case("v1-style-spend", "Witness v2 output spent like a Taproot "
-             "output with a bare 64-byte signature and no marker", tx,
-             utxos, False, "undefined marker byte")
+    tx.witnesses[0] = [optout_element(sig0_40)]
+    tx.witnesses[1] = [optout_element(sig1_40)]
+    add_case("agg-mode-sig-as-optout", "Signature created over the "
+             "half-aggregation flavored message used as a bare opted-out "
+             "signature", tx, utxos, False,
+             "signature invalid, message commits to the aggregation mode")
 
     # 41: valid, 8-member half-aggregation group. The aggregate is
     # (8+1)*32 = 288 bytes and the final witness element is 289 bytes,
@@ -1219,7 +1245,7 @@ def make_consensus_vectors():
     utxos[0] = TxOut(100_000_000, v2_script_pubkey(Q42.to_bytes_xonly()))
     _, sig1_42 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
     tx.witnesses[0] = [bytes([MARKER_HALFAGG]), script42, control42]
-    tx.witnesses[1] = [marker_element(MARKER_OPTOUT, sig=sig1_42)]
+    tx.witnesses[1] = [optout_element(sig1_42)]
     add_case("scriptpath-marker-lookalike", "Script path spend whose first "
              "stack element is a 1-byte 0xbc marker lookalike, which has "
              "no marker meaning outside key path spends", tx, utxos, True)
@@ -1244,6 +1270,81 @@ def make_consensus_vectors():
     add_case("duplicate-key-groups", "Half-aggregation and full-aggregation "
              "groups whose two members each spend outputs with the same "
              "witness program (address reuse)", tx, utxos, True)
+
+    # 44: invalid, ANYONECANPAY signature for the same output key created
+    # as if spending the v1 scriptPubKey, replayed on the witness v2
+    # input. Fails because the message commits to the spent scriptPubKey.
+    keys, utxos, tx = fresh_setup(2, key_offset=90)
+    utxos_v1 = list(utxos)
+    utxos_v1[0] = TxOut(utxos[0].amount, bytes([0x51, 0x20]) + keys[0][3])
+    ht44 = SIGHASH_ALL | SIGHASH_ANYONECANPAY
+    m0_v1spk = sigmsg_v1(tx, utxos_v1, 0, ht44)
+    sig0_44 = schnorr_sign(m0_v1spk, keys[0][2], AUX_ZERO)
+    m0_v2spk = sigmsg_v1(tx, utxos, 0, ht44)
+    assert not schnorr_verify(m0_v2spk, keys[0][3], sig0_44)
+    _, sig1_44 = sign_optout(tx, utxos, 1, keys[1][2], SIGHASH_DEFAULT)
+    tx.witnesses[0] = [optout_element(sig0_44, ht44)]
+    tx.witnesses[1] = [optout_element(sig1_44)]
+    add_case("v1-replay", "BIP 341 key path signature created for a "
+             "witness v1 output with the same output key, replayed on a "
+             "witness v2 input", tx, utxos, False,
+             "signature message commits to the spent scriptPubKey")
+
+    # 45: invalid, undefined sighash value in a placeholder, complementing
+    # case 28 for the marked forms. The aggregate covers the matching
+    # messages, so only the sighash validation fails.
+    keys, utxos, tx = fresh_setup(3, key_offset=92)
+    _, sig0_45 = sign_optout(tx, utxos, 0, keys[0][2], SIGHASH_DEFAULT)
+    _, _, aggsig45 = sign_halfagg_group(
+        tx, utxos, [(1, keys[1][2], 0x04), (2, keys[2][2], SIGHASH_DEFAULT)]
+    )
+    tx.witnesses[0] = [optout_element(sig0_45)]
+    tx.witnesses[1] = [bytes([0x04, MARKER_HALFAGG])]
+    tx.witnesses[2] = [marker_element(MARKER_HALFAGG, sig=aggsig45)]
+    add_case("placeholder-sighash-undefined", "Half-aggregation placeholder "
+             "with the undefined sighash value 0x04", tx, utxos, False,
+             "undefined sighash type")
+
+    # 46: invalid, 96-byte 0xbc element, whose length modulo 32 matches
+    # neither final form. Complements cases 29 and 8.
+    keys, utxos, tx = fresh_setup(2, key_offset=95)
+    _, sig0_46 = sign_optout(tx, utxos, 0, keys[0][2], SIGHASH_DEFAULT)
+    _, _, agg46 = sign_halfagg_group(
+        tx, utxos, [(1, keys[1][2], SIGHASH_DEFAULT)])
+    tx.witnesses[0] = [optout_element(sig0_46)]
+    tx.witnesses[1] = [marker_element(MARKER_HALFAGG,
+                                      sig=agg46 + test_garbage(b"pad", 31))]
+    add_case("halfagg-final-bad-length", "96-byte 0xbc element whose length "
+             "modulo 32 matches neither half-aggregation final form",
+             tx, utxos, False, "marker and length match no defined structure")
+
+    # 47: valid, half-aggregation member with SIGHASH_ALL|ANYONECANPAY,
+    # covering the per-input commitment branch of SigMsg in an
+    # aggregation flavored message
+    keys, utxos, tx = fresh_setup(2, key_offset=97)
+    ht47 = SIGHASH_ALL | SIGHASH_ANYONECANPAY
+    _, _, agg47 = sign_halfagg_group(
+        tx, utxos, [(0, keys[0][2], ht47), (1, keys[1][2], SIGHASH_DEFAULT)]
+    )
+    tx.witnesses[0] = [marker_element(MARKER_HALFAGG, ht47)]
+    tx.witnesses[1] = [marker_element(MARKER_HALFAGG, sig=agg47)]
+    add_case("halfagg-acp-member", "Half-aggregation group with a "
+             "SIGHASH_ALL|SIGHASH_ANYONECANPAY member", tx, utxos, True)
+
+    # 48: invalid, marker of the full-aggregation final from case 25
+    # flipped to 0xbc by a third party, which parses as a half-aggregation
+    # final of the correct size. Fails because the message commits to the
+    # marker. fresh_setup(1, key_offset=44) recreates the case 25 tx.
+    keys, utxos, tx = fresh_setup(1, key_offset=44)
+    m0_48 = sigmsg_v2(tx, utxos, 0, SIGHASH_DEFAULT, MARKER_HALFAGG)
+    assert not halfagg.VerifyAggregate(
+        sig64_25, [(utxos[0].script_pubkey[2:], m0_48)])
+    tx.witnesses[0] = [marker_element(MARKER_HALFAGG, sig=sig64_25)]
+    add_case("marker-swapped", "Full-aggregation final of a single-member "
+             "group mutated to carry the half-aggregation marker", tx,
+             utxos, False,
+             "aggregate signature invalid, messages commit to the "
+             "aggregation mode")
 
     return {"testCases": cases}
 
