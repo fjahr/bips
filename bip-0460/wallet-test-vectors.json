@@ -52,7 +52,7 @@
           "given": {
             "txinIndex": 0,
             "internalPrivkey": "50dbc446357ea19a9f032c65541a3d69d7fce0f909c67671ab92f0fdf75bc75b",
-            "marker": null,
+            "aggMode": null,
             "hashType": 1
           },
           "intermediary": {
@@ -71,7 +71,7 @@
           "given": {
             "txinIndex": 1,
             "internalPrivkey": "26cc4c0d15b25be1e2137c638a99c9dbce9cfe8b74d2f1612731d9e620648870",
-            "marker": "0xbc",
+            "aggMode": "0xbc",
             "hashType": 0
           },
           "intermediary": {
@@ -82,7 +82,7 @@
           },
           "expected": {
             "witness": [
-              "bc"
+              "5dc80989a7bcfb1fce2602935d5b70052b7eb030c50f4a9f08b49c08cb20ef3f"
             ]
           }
         },
@@ -90,7 +90,7 @@
           "given": {
             "txinIndex": 2,
             "internalPrivkey": "213ac0b0d8b50089762f10ee2851872255c673e87da343375d89060cbec74e4a",
-            "marker": "0xbc",
+            "aggMode": "0xbc",
             "hashType": 0
           },
           "intermediary": {
@@ -101,7 +101,7 @@
           },
           "expected": {
             "witness": [
-              "5dc80989a7bcfb1fce2602935d5b70052b7eb030c50f4a9f08b49c08cb20ef3f9e0f4cac3b04d5360ca75e857091040adbc8e35d7e72d6ba1e4d4d5f407018ebdb694f9f26ae5b34c24c2123e76cd5924da9d7236b71d5cc87c16303e1f353bcbc"
+              "9e0f4cac3b04d5360ca75e857091040adbc8e35d7e72d6ba1e4d4d5f407018ebdb694f9f26ae5b34c24c2123e76cd5924da9d7236b71d5cc87c16303e1f353bcbc"
             ]
           }
         }
@@ -110,7 +110,7 @@
         "aggregateSignature": "5dc80989a7bcfb1fce2602935d5b70052b7eb030c50f4a9f08b49c08cb20ef3f9e0f4cac3b04d5360ca75e857091040adbc8e35d7e72d6ba1e4d4d5f407018ebdb694f9f26ae5b34c24c2123e76cd5924da9d7236b71d5cc87c16303e1f353bc"
       },
       "expected": {
-        "rawSignedTx": "02000000000103375412079d92555f10368dc54e08189023c8a6bfe0318933dda280bb8c96e76a0000000000ffffffff2dea8db84ee1bcea688026b1bda8fea0667b8f3b24d914e2afe0f5dffae5086d0000000000ffffffff8e89080fe122cee9ffa6c0b2128cc14be4ca148c2629d0040f6037cfd0f816190000000000ffffffff01c060d211000000002252204049ce224d4b6407e9c7864e88d8020996beb04663cd1596bf4ff8ab335bc57b014186a207d61052859ed25d045739ff69f6c94e246c7e95c0bd2dbf951cb75f0ee55e890397180835f8d5aeb8eabef4c9e234b13aa87fe38c96f25001f3b1a0631d010101bc01615dc80989a7bcfb1fce2602935d5b70052b7eb030c50f4a9f08b49c08cb20ef3f9e0f4cac3b04d5360ca75e857091040adbc8e35d7e72d6ba1e4d4d5f407018ebdb694f9f26ae5b34c24c2123e76cd5924da9d7236b71d5cc87c16303e1f353bcbc00000000"
+        "rawSignedTx": "02000000000103375412079d92555f10368dc54e08189023c8a6bfe0318933dda280bb8c96e76a0000000000ffffffff2dea8db84ee1bcea688026b1bda8fea0667b8f3b24d914e2afe0f5dffae5086d0000000000ffffffff8e89080fe122cee9ffa6c0b2128cc14be4ca148c2629d0040f6037cfd0f816190000000000ffffffff01c060d211000000002252204049ce224d4b6407e9c7864e88d8020996beb04663cd1596bf4ff8ab335bc57b014186a207d61052859ed25d045739ff69f6c94e246c7e95c0bd2dbf951cb75f0ee55e890397180835f8d5aeb8eabef4c9e234b13aa87fe38c96f25001f3b1a0631d0101205dc80989a7bcfb1fce2602935d5b70052b7eb030c50f4a9f08b49c08cb20ef3f01419e0f4cac3b04d5360ca75e857091040adbc8e35d7e72d6ba1e4d4d5f407018ebdb694f9f26ae5b34c24c2123e76cd5924da9d7236b71d5cc87c16303e1f353bcbc00000000"
       }
     },
     {
@@ -133,7 +133,7 @@
           "given": {
             "txinIndex": 0,
             "internalPrivkey": "edc07892ebcc0812db6aea0fbc967eed825fedecf70db83d4c69fbe574b97361",
-            "marker": "0xbd",
+            "aggMode": "0xbd",
             "hashType": 1
           },
           "intermediary": {
@@ -144,7 +144,7 @@
           },
           "expected": {
             "witness": [
-              "01bd"
+              "01"
             ]
           }
         },
@@ -152,7 +152,7 @@
           "given": {
             "txinIndex": 1,
             "internalPrivkey": "80f4d8f499868a546ca66497352d4df0aa1c7e99cd83faeba3eeb11ecafec708",
-            "marker": "0xbd",
+            "aggMode": "0xbd",
             "hashType": 1
           },
           "intermediary": {
@@ -180,7 +180,7 @@
         "aggregateSignature": "f00c224cc4e1bb038b1f35d71c28608510236327924d350d75520eb6295eb1908a38b68c0a7b484bc4ac7330ae2f5e909bf25b53fa60131f7d6799d5017311d8"
       },
       "expected": {
-        "rawSignedTx": "0200000000010254d36a0897340110cc34b526d73b206175ae4f5db4d25fe7bdeef3a8a5e89afd0100000000ffffffff835a02826d69e61b563ec713020bd2b7c3bc3848223cda2b3c52bbdcd3e6267a0100000000ffffffff01c0cb1707000000002252208640c68f13b51a1e63dfc5cc41202cca21c18f1f9d7037c2cbec3f03f63e52e4010201bd0142f00c224cc4e1bb038b1f35d71c28608510236327924d350d75520eb6295eb1908a38b68c0a7b484bc4ac7330ae2f5e909bf25b53fa60131f7d6799d5017311d801bd00000000"
+        "rawSignedTx": "0200000000010254d36a0897340110cc34b526d73b206175ae4f5db4d25fe7bdeef3a8a5e89afd0100000000ffffffff835a02826d69e61b563ec713020bd2b7c3bc3848223cda2b3c52bbdcd3e6267a0100000000ffffffff01c0cb1707000000002252208640c68f13b51a1e63dfc5cc41202cca21c18f1f9d7037c2cbec3f03f63e52e40101010142f00c224cc4e1bb038b1f35d71c28608510236327924d350d75520eb6295eb1908a38b68c0a7b484bc4ac7330ae2f5e909bf25b53fa60131f7d6799d5017311d801bd00000000"
       }
     }
   ],
