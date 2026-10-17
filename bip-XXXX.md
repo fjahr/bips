@@ -8,7 +8,7 @@
   Assigned: ?
   License: BSD-2-Clause
   Discussion: 2026-05-06: https://groups.google.com/g/bitcoindev/c/rThmyI8ZN3Q
-  Version: 0.5.0
+  Version: 0.6.0
   Requires: 434
 ```
 
@@ -85,53 +85,82 @@ advertise the feature.
 
 #### Serialized UTXO Set
 
-The serialized UTXO set uses the format established by the Bitcoin Core RPC `dumptxoutset` (as of Bitcoin Core v31).
+This proposal uses version 3 of the `dumptxoutset` serialization. All fixed-width integers are
+unsigned and little-endian. `compact_size` is Bitcoin's minimally encoded CompactSize: a one-byte
+value below 253, otherwise a marker byte 253, 254, or 255 followed by a little-endian 2-, 4-, or
+8-byte value, respectively. Fixed-length byte fields have no prefix. Variable-length arrays and byte
+strings are prefixed with their CompactSize element or byte count.
 
-**Header (55 bytes):**
+**Header (51 bytes):**
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
 | `magic` | `bytes` | 5 | `0x7574786fff` (ASCII `utxo` + `0xff`). |
-| `version` | `uint16_t` | 2 | Format version. |
+| `version` | `uint16_t` | 2 | Format version, MUST be 3. |
 | `network_magic` | `bytes` | 4 | Network message start bytes. |
-| `base_height` | `uint32_t` | 4 | Block height of the UTXO set. |
 | `base_blockhash` | `uint256` | 32 | Block hash of the UTXO set. |
 | `coins_count` | `uint64_t` | 8 | Total number of coins (UTXOs) in the set. |
 
-**Body (coin data):**
+The base height is obtained by looking up `base_blockhash` in the block-header chain; it is not
+serialized separately. This retains the header layout of version 2 of `dumptxoutset`.
 
-Coins are grouped by transaction hash. For each group:
+**Body (framed coin data):**
+
+The header is followed by zero or more data chunks. Each data chunk is serialized as
+`compact_size(payload_length) || payload`, with `1 <= payload_length <= 262144` (256 KiB).
+The prefix is part of the chunk bytes transferred and hashed. No coin or group header crosses a
+chunk boundary. An empty UTXO set has no data chunks.
+
+Each payload contains one or more transaction group fragments. Each fragment is entirely contained
+in one chunk; its `num_coins` counts only the coins in that fragment, not coins in other fragments
+with the same txid:
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `txid` | `uint256` | 32 | Transaction hash. |
-| `num_coins` | `compact_size` | 1–9 | Number of outputs for this txid. |
+| `txid` | `bytes` | 32 | Transaction hash in its serialized byte order. |
+| `num_coins` | `compact_size` | 1–9 | Positive number of coins in this group fragment. |
 
-For each coin in the group:
+For each coin in the fragment:
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| `vout_index` | `compact_size` | 1–9 | Output index. |
-| `coin` | `Coin` | variable | Serialized coin (varint-encoded code for height/coinbase, then compressed txout). |
+| `vout_index` | `compact_size` | 1–9 | Output index, at most `0xfffffffe`. |
+| `coin` | `Coin` | variable | Serialized coin (varint-encoded code for height/coinbase, then compressed txout), as in version 2 of `dumptxoutset`. |
 
-Coins are ordered lexicographically by outpoint (txid, then vout index), matching the LevelDB iteration
-order of the coins database.
+The complete sequence of coins MUST be strictly increasing by outpoint: compare the 32 serialized
+txid bytes lexicographically, treating each byte as unsigned; for equal txids compare output indices
+numerically. This is not the order of displayed txid hex strings, nor a comparison of encoded index
+bytes. Duplicates are forbidden, including across chunk boundaries. Exactly `coins_count` coins
+MUST be present, with no trailing bytes.
+
+To obtain deterministic chunk boundaries, writers MUST pack coins greedily in this order. For each
+txid, put the largest positive number of its remaining coins that fits in the current payload,
+including the txid, group count, output indices and serialized coins. If none fits, finish the current
+chunk and start a new one. Continue a transaction in a new chunk by repeating its txid and writing
+the count for the new fragment. After finishing a txid, try the next txid in the same chunk. Finish the last
+chunk after the last coin. A single serialized coin with its group header MUST fit in 256 KiB.
+
+Each data chunk can consequently be decoded without downloading any other data chunk. Obtaining
+all unspent outputs for a transaction may require several chunks, but decoding and inserting any
+individual coin does not. The chunk's first and last outpoints bound its contents in the global
+order, allowing a future implementation to locate an outpoint by binary search over authenticated chunks. No seek index or just-in-time validation
+mechanism is specified here.
 
 #### Chunk Merkle Tree
 
-The serialized UTXO set (header + body) is split into chunks of exactly 3,900,000 bytes (3.9 MB). The
-last chunk contains the remaining bytes and may be smaller. The chunks form the leaves of a binary
-Merkle tree whose root commits to the entire UTXO set.
+Chunk 0 consists of the 51-byte snapshot header. Chunks 1 onwards are the framed data chunks above,
+in file order. Concatenating all chunk bytes reconstructs the snapshot file exactly.
 
-The leaf hash for each chunk is `SHA256d(chunk_data)`. The tree is built as a balanced binary tree. When
-the number of nodes at a level is odd, the last node is promoted unchanged to the next level.
-Interior nodes are computed as `SHA256d(left_child || right_child)`.
+Each chunk descriptor consists of its `hash = SHA256d(chunk_bytes)` and its byte `size` as a
+`uint32_t`. The leaf hash is `SHA256d(0x00 || uint32_le(size) || hash)`. Interior nodes are
+`SHA256d(0x01 || left_child || right_child)`; when a level has an odd number of nodes, its last node
+is promoted unchanged. A one-leaf tree has that leaf as its root. Hashes are concatenated in their
+raw 32-byte digest representation, without reversing bytes. The domain prefixes distinguish leaves
+from interior nodes; committing to each size authenticates the file offsets derived from the list.
 
-The leaves are delivered to the node in a single `utxotree` response. A node that knows
-the Merkle root for a given UTXO set checks a received list of leaves by recomputing the root and
-comparing. The Merkle root is the sole trust input required to verify the integrity of the received UTXO set.
-
-`SHA256d` denotes double-SHA256: `SHA256d(x) = SHA256(SHA256(x))`.
+The ordered descriptors are delivered in a single `utxotree` response. A node verifies the list by
+recomputing its root and comparing against its known root for this snapshot and format version.
+`SHA256d(x)` denotes `SHA256(SHA256(x))`.
 
 ### Messages
 
@@ -149,18 +178,22 @@ node SHOULD apply a reasonable timeout and try another peer.
 
 #### `utxotree`
 
-Sent in response to `getutxotree`, delivering the full chunk-hash list along with per-snapshot
-metadata.
+Sent in response to `getutxotree`, delivering the full ordered chunk-descriptor list.
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
 | `block_hash` | `uint256` | 32 | Block hash this data corresponds to. |
 | `version` | `uint16_t` | 2 | Format version of the serialized UTXO set. |
-| `data_length` | `uint64_t` | 8 | Total size of the serialized UTXO set in bytes (header + body). |
-| `chunk_hashes` | `uint256[]` | 32 × N | The ordered list of N chunk hashes, where N = `ceil(data_length / 3,900,000)`. |
+| `chunks` | `chunk_descriptor[]` | 1–5 + 36 × N | CompactSize-prefixed list of N descriptors, each a 32-byte `hash` followed by a 4-byte `size`. |
+
+There MUST be between 1 and 100,000 descriptors. The first size MUST be 51. Subsequent sizes MUST
+include the CompactSize payload-length prefix and MUST match the framed-chunk format above
+(at most 262149 bytes). The sum of all sizes is the snapshot file length; a chunk's file offset is
+the sum of the preceding sizes. A receiver MUST reject unsupported format versions before
+requesting chunks. The header version MUST agree with this message's `version`.
 
 Upon receiving a `utxotree` message, the requesting node MUST recompute the Merkle root from
-`chunk_hashes` and compare it against the Merkle root it knows for the corresponding UTXO set. If
+`chunks` and compare it against the Merkle root it knows for the corresponding UTXO set. If
 the roots do not match, the node MUST discard the response and MUST disconnect the peer.
 
 #### `getutxoset`
@@ -184,14 +217,16 @@ Sent in response to `getutxoset`, delivering one chunk.
 |-------|------|------|-------------|
 | `block_hash` | `uint256` | 32 | Block hash this data corresponds to. |
 | `chunk_index` | `uint32_t` | 4 | Zero-based index of this chunk. |
-| `data` | `bytes` | variable | Chunk payload, exactly 3.9 MB except for the last chunk. |
+| `data` | `bytes` | variable | CompactSize-prefixed chunk bytes, of the size in `chunks[chunk_index]`. |
 
 The transfer is receiver-driven: the requesting node sends one `getutxoset` per chunk. Chunks MAY be
 requested in any order and from different peers.
 
 Upon receiving a `utxoset` message, the node MUST compute `SHA256d(data)` and compare it against
-`chunk_hashes[chunk_index]` from the `utxotree` it accepted for this UTXO set. If the hashes do not
-match, the node MUST discard the chunk and MUST disconnect the peer. A node SHOULD also disconnect
+`chunks[chunk_index].hash` from the accepted `utxotree`. The byte length MUST also equal
+`chunks[chunk_index].size`. If either check fails, the node MUST discard the chunk and MUST
+disconnect the peer. The message byte-vector prefix is excluded from the chunk bytes, hash, and size.
+A node SHOULD also disconnect
 a peer that sends a `utxoset` message with fields (`chunk_index`, `block_hash`) that do not match
 the outstanding request.
 
@@ -229,19 +264,24 @@ service bit; the requesting node identifies the desired UTXO set by block hash w
 
 **Per-chunk verification:** The chunk-hash list returned in `utxotree` enables each chunk to be verified
 by direct lookup against the accepted list as it arrives, allowing immediate detection of corrupt data,
-peer switching without data loss, and parallel download from multiple peers. The list itself is small
-(~80 KB for a ~10 GB set). The specified serialization is deterministic, so all honest nodes produce
-byte-identical output, guaranteeing Merkle root agreement.
+peer switching without data loss, and parallel download from multiple peers. Deterministic
+serialization lets honest nodes agree on the Merkle root.
 
-**3.9 MB chunk size:** The number balances round trips (~2,560 for a ~10 GB set) against memory usage
-for buffering and verifying a single chunk. Smaller chunks would increase protocol overhead; larger
-chunks would increase memory pressure on constrained devices commonly used to run Bitcoin nodes.
-Together with the additional message overhead, the `utxoset` message including the chunk data also
-sits just below the theoretical maximum block size which means any implementation should be able to
-handle messages of this size.
+**256 KiB payload bound:** Smaller chunks reduce how much unrelated data must be fetched to decode
+a particular coin. Splitting large transaction groups, while repeating only the txid and count,
+keeps each chunk independently decodable without repeating a txid for every coin. Greedy packing
+preserves a single canonical serialization. The size list is sufficient to reconstruct file offsets;
+no separate seek index is required.
 
-**Reusing the `dumptxoutset` format:** Avoids introducing a new serialization format and ensures
-compatibility with UTXO sets already being generated and shared.
+**One descriptor-list message:** At 100,000 descriptors the response is 3,600,039 bytes, below the
+4,000,000-byte P2P message bound. For a 9 GB snapshot with nearly full chunks the list is about
+1.24 MB. This version limits the number of chunks, and thus the size of snapshots it can serve;
+larger future sets require a protocol revision, such as paginated descriptors.
+
+**Snapshot version 3:** Framing and splitting transaction groups changes the file body, so version 2
+files and their chunk commitments cannot be reused. The header layout and coin encoding are
+retained. Numeric output-index ordering is explicit and independent of a database's encoded-key
+iteration order.
 
 **Relationship to BIP 64:** BIP 64 defined a protocol for querying individual UTXOs by outpoint and is
 now closed. This BIP addresses a different use case: bulk transfer of the entire UTXO set for node
@@ -249,9 +289,10 @@ bootstrapping.
 
 ## Backwards Compatibility
 
-This proposal is backward compatible. Peers that do not implement it ignore the new service bit
+The P2P extension is backward compatible. Peers that do not implement it ignore the new service bit
 and never issue the new messages. Feature negotiation follows BIP 434, so peers that do not
-recognize the feature ignore it.
+recognize the feature ignore it. Snapshot files use a new version; version 2 readers must reject
+version 3 files. Chunk commitments must be regenerated from version 3 snapshots.
 
 ## Reference Implementation
 
@@ -278,6 +319,11 @@ https://opensource.org/license/BSD-2-Clause for more information.
 
 ## Changelog
 
+* __0.6.0__ (2026-10-17):
+    * Defined version 3 snapshots with 256 KiB, coin-aligned, independently decodable chunks
+    * Specified global outpoint ordering and deterministic packing, including split transaction groups
+    * Added authenticated chunk sizes and domain-separated Merkle hashes
+    * Bounded the single descriptor-list response to 100,000 chunks
 * __0.5.0__ (2026-06-03):
     * Defined a deterministic schedule of served heights for the `NODE_UTXO_SET` service bit
     * Added BIP 434 feature negotiation to signal support for the protocol messages
