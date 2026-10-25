@@ -375,6 +375,12 @@ def gen_sign_error_vectors(f):
     bad_r2_pubnonces[1] = pubnonces_bytes[1][:33] + b"\x02" + bytes(32)
     write_raw_row(9, sk.to_bytes(), secnonce_bytes, bad_r2_pubnonces,
                   "Signer 1's R2 is not on the curve")
+    write_raw_row(10, sk.to_bytes(), bytes_from_int(n) + secnonce_bytes[32:], pubnonces_bytes,
+                  "Secnonce first value is n (out of range)")
+    write_raw_row(11, sk.to_bytes(), secnonce_bytes[:32] + bytes_from_int(n), pubnonces_bytes,
+                  "Secnonce second value is n (out of range)")
+    write_raw_row(12, bytes_from_int(n), secnonce_bytes, pubnonces_bytes,
+                  "Secret key is n (out of range)")
 
 
 def gen_sig_agg_vectors(f):
