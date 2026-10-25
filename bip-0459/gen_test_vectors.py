@@ -282,6 +282,9 @@ def gen_sign_vectors(f):
     write_row(5, [make_tweaked_signer(0, 0x21, False), make_tweaked_signer(1, 0x22, True)],
               "Signers with tweaked keys")
     write_row(6, make_duplicate_pm_signers(), "Exact duplicate (pk, m) entries")
+    sk0, pk0, msg0, secnonce0, pubnonce0 = make_signer(0)
+    write_row(7, [(-sk0, -pk0, msg0, secnonce0, pubnonce0), make_signer(1)],
+              "Untweaked signer key with odd y")
 
 
 def gen_sign_error_vectors(f):
@@ -588,6 +591,28 @@ def gen_partial_sig_verify_vectors(f):
     writer.writerow((idx, 0, psigs[0].to_bytes().hex().upper(),
                      pks_hex, msgs_hex, inf_pubnonces,
                      "FALSE", "Aggregate nonce R1 is infinity"))
+    idx += 1
+
+    def write_encoding_row(idx, pks_bytes, pubnonces_bytes, comment):
+        writer.writerow((idx, 0, psigs[0].to_bytes().hex().upper(),
+                         format_list(pks_bytes), msgs_hex, format_list(pubnonces_bytes),
+                         "FALSE", comment))
+
+    pks_bytes = [serialize_pk(s[1]) for s in signers]
+    pubnonces_bytes = [serialize_pubnonce(s[4]) for s in signers]
+    off_curve = bytes(32)
+    write_encoding_row(idx, pks_bytes, [b"\x04" + pubnonces_bytes[0][1:], pubnonces_bytes[1]],
+                       "Signer 0's R1 has an invalid prefix byte 0x04")
+    idx += 1
+    write_encoding_row(idx, pks_bytes, [pubnonces_bytes[0][:33] + b"\x02" + off_curve, pubnonces_bytes[1]],
+                       "Signer 0's R2 is not on the curve")
+    idx += 1
+    write_encoding_row(idx, pks_bytes,
+                       [pubnonces_bytes[0], b"\x02" + bytes_from_int(FE.SIZE + 1) + pubnonces_bytes[1][33:]],
+                       "Signer 1's R1 exceeds field size")
+    idx += 1
+    write_encoding_row(idx, [off_curve, pks_bytes[1]], pubnonces_bytes,
+                       "Signer 0's public key is not on the curve")
 
 
 def gen_tweak_vectors(f):
@@ -633,6 +658,10 @@ def gen_tweak_vectors(f):
     error_row(5, odd, odd, True, "X-only tweak resulting in the point at infinity")
     writer.writerow((6, even.to_bytes().hex().upper(), bytes_from_int(n).hex().upper(),
                      "FALSE", "FALSE", "", "", "Tweak = n (out of range)"))
+    row(7, even, Scalar(0), False, "Plain tweak = 0")
+    row(8, odd, Scalar(0), True, "X-only tweak = 0 of an odd-y key")
+    writer.writerow((9, even.to_bytes().hex().upper(), bytes_from_int(n).hex().upper(),
+                     "TRUE", "FALSE", "", "", "X-only tweak = n (out of range)"))
 
 
 if __name__ == "__main__":
