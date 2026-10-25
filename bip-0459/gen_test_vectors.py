@@ -355,6 +355,27 @@ def gen_sign_error_vectors(f):
               "Aggregate nonce second half exceeds field size",
               aggnonce[:33] + b"\x02" + bytes_from_int(FE.SIZE + 1))
 
+    # Inputs that cannot be represented as Scalar or GE are written directly
+    def write_raw_row(idx, sk_bytes, secnonce_bytes, pubnonces_bytes, comment):
+        writer.writerow((
+            idx,
+            sk_bytes.hex().upper(),
+            msg.hex().upper(),
+            secnonce_bytes.hex().upper(),
+            aggnonce.hex().upper(),
+            format_list([serialize_pk(p) for p in pks]),
+            format_list(msgs),
+            format_list(pubnonces_bytes),
+            comment,
+        ))
+
+    secnonce_bytes = serialize_secnonce(secnonce)
+    pubnonces_bytes = [serialize_pubnonce(p) for p in pubnonces]
+    bad_r2_pubnonces = list(pubnonces_bytes)
+    bad_r2_pubnonces[1] = pubnonces_bytes[1][:33] + b"\x02" + bytes(32)
+    write_raw_row(9, sk.to_bytes(), secnonce_bytes, bad_r2_pubnonces,
+                  "Signer 1's R2 is not on the curve")
+
 
 def gen_sig_agg_vectors(f):
     writer = csv.writer(f)

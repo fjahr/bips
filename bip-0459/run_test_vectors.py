@@ -179,14 +179,13 @@ def run_sign_error_tests() -> List[str]:
             (index, sk_str, msg_str, secnonce_str, aggnonce_str,
              pks_str, msgs_str, pubnonces_str, comment) = row
 
-            sk = Scalar.from_bytes_checked(bytes.fromhex(sk_str))
-            m = bytes.fromhex(msg_str)
-            secnonce = parse_secnonce(bytes.fromhex(secnonce_str))
-            pks = [GE.from_bytes_xonly(b) for b in parse_hex_list(pks_str)]
-            msgs = parse_hex_list(msgs_str)
-            pubnonces = [parse_pubnonce(b) for b in parse_hex_list(pubnonces_str)]
-
             try:
+                sk = Scalar.from_bytes_checked(bytes.fromhex(sk_str))
+                m = bytes.fromhex(msg_str)
+                secnonce = parse_secnonce(bytes.fromhex(secnonce_str))
+                pks = [GE.from_bytes_xonly(b) for b in parse_hex_list(pks_str)]
+                msgs = parse_hex_list(msgs_str)
+                pubnonces = [parse_pubnonce(b) for b in parse_hex_list(pubnonces_str)]
                 aggnonce = parse_pubnonce(bytes.fromhex(aggnonce_str))
                 Sign(secnonce, sk, m, aggnonce, pks, msgs, pubnonces)
             except ValueError:
