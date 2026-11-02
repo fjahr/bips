@@ -26,6 +26,7 @@ NONCE_GEN_VECTORS = VECTORS_DIR / "test_vectors_nonce_gen.csv"
 NONCE_AGG_VECTORS = VECTORS_DIR / "test_vectors_nonce_agg.csv"
 SIGN_VECTORS = VECTORS_DIR / "test_vectors_sign.csv"
 SIGN_ERROR_VECTORS = VECTORS_DIR / "test_vectors_sign_error.csv"
+SIG_AGG_VECTORS = VECTORS_DIR / "test_vectors_sig_agg.csv"
 VERIFY_VECTORS = VECTORS_DIR / "test_vectors_verify.csv"
 PARTIAL_SIG_VERIFY_VECTORS = VECTORS_DIR / "test_vectors_partial_sig_verify.csv"
 TWEAK_VECTORS = VECTORS_DIR / "test_vectors_tweak.csv"
@@ -195,6 +196,39 @@ def run_sign_error_tests() -> List[str]:
     return failures
 
 
+def run_sig_agg_tests() -> List[str]:
+    failures = []
+
+    with open(SIG_AGG_VECTORS, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader)
+
+        for row in reader:
+            (index, aggnonce_str, pks_str, msgs_str, pubnonces_str, psigs_str,
+             expected_result, expected_sig_str, comment) = row
+            expected = (expected_result == "TRUE")
+
+            try:
+                aggnonce = parse_pubnonce(bytes.fromhex(aggnonce_str))
+                pks = [GE.from_bytes_xonly(b) for b in parse_hex_list(pks_str)]
+                msgs = parse_hex_list(msgs_str)
+                pubnonces = [parse_pubnonce(b) for b in parse_hex_list(pubnonces_str)]
+                psigs = [Scalar.from_bytes_checked(b) for b in parse_hex_list(psigs_str)]
+                R, s = SigAgg(aggnonce, pks, msgs, pubnonces, psigs)
+                sig = R.to_bytes_xonly() + s.to_bytes()
+            except ValueError:
+                sig = None
+
+            if expected:
+                ok = sig is not None and sig.hex().upper() == expected_sig_str
+            else:
+                ok = sig is None
+            if not ok:
+                failures.append(f"SigAgg #{index}: {comment}")
+
+    return failures
+
+
 def run_partial_sig_verify_tests() -> List[str]:
     failures = []
 
@@ -286,7 +320,7 @@ def run_tweak_tests() -> List[str]:
 
 def main():
     for filename in [NONCE_GEN_VECTORS, NONCE_AGG_VECTORS, SIGN_VECTORS, SIGN_ERROR_VECTORS,
-                     VERIFY_VECTORS, PARTIAL_SIG_VERIFY_VECTORS, TWEAK_VECTORS]:
+                     SIG_AGG_VECTORS, VERIFY_VECTORS, PARTIAL_SIG_VERIFY_VECTORS, TWEAK_VECTORS]:
         if not os.path.exists(filename):
             print(f"ERROR: Missing {filename}. Run gen_test_vectors.py first.")
             sys.exit(1)
@@ -296,6 +330,7 @@ def main():
     failures.extend(run_nonce_agg_tests())
     failures.extend(run_sign_tests())
     failures.extend(run_sign_error_tests())
+    failures.extend(run_sig_agg_tests())
     failures.extend(run_partial_sig_verify_tests())
     failures.extend(run_verify_tests())
     failures.extend(run_tweak_tests())

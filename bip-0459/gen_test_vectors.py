@@ -11,6 +11,7 @@ Outputs:
     - vectors/test_vectors_nonce_agg.csv          (NonceAgg: success and failure cases)
     - vectors/test_vectors_sign.csv               (end-to-end signing with fixed nonces)
     - vectors/test_vectors_sign_error.csv         (sessions in which Sign must fail)
+    - vectors/test_vectors_sig_agg.csv            (SigAgg: success and failure cases)
     - vectors/test_vectors_verify.csv             (Verify: success and failure cases)
     - vectors/test_vectors_partial_sig_verify.csv (PartialSigVerify cases)
     - vectors/test_vectors_tweak.csv              (plain and X-only key tweaking)
@@ -46,6 +47,7 @@ NONCE_GEN_VECTORS = VECTORS_DIR / "test_vectors_nonce_gen.csv"
 NONCE_AGG_VECTORS = VECTORS_DIR / "test_vectors_nonce_agg.csv"
 SIGN_VECTORS = VECTORS_DIR / "test_vectors_sign.csv"
 SIGN_ERROR_VECTORS = VECTORS_DIR / "test_vectors_sign_error.csv"
+SIG_AGG_VECTORS = VECTORS_DIR / "test_vectors_sig_agg.csv"
 VERIFY_VECTORS = VECTORS_DIR / "test_vectors_verify.csv"
 PARTIAL_SIG_VERIFY_VECTORS = VECTORS_DIR / "test_vectors_partial_sig_verify.csv"
 TWEAK_VECTORS = VECTORS_DIR / "test_vectors_tweak.csv"
@@ -195,6 +197,7 @@ def gen_nonce_gen_vectors(f):
     row(1, sk, b"", "Secret key and no extra_in")
     row(2, None, extra_in, "No secret key and extra_in")
     row(3, None, b"", "No secret key and no extra_in")
+    row(4, sk, bytes([0x26] * 38), "Secret key and 38-byte extra_in")
 
 
 def gen_nonce_agg_vectors(f):
@@ -351,6 +354,40 @@ def gen_sign_error_vectors(f):
     write_row(8, signers[0], pks, msgs, pubnonces,
               "Aggregate nonce second half exceeds field size",
               aggnonce[:33] + b"\x02" + bytes_from_int(FE.SIZE + 1))
+
+
+def gen_sig_agg_vectors(f):
+    writer = csv.writer(f)
+    writer.writerow((
+        "index", "aggnonce", "pubkeys", "messages", "pubnonces", "psigs",
+        "expected_result", "expected_sig", "comment",
+    ))
+
+    signers = [make_signer(i) for i in range(2)]
+    aggnonce, psigs, sig = sign_session(signers)
+    pks = [s[1] for s in signers]
+    msgs = [s[2] for s in signers]
+    assert Verify(pks, msgs, sig)
+
+    def write_row(idx, psigs_bytes, expected_sig, comment):
+        writer.writerow((
+            idx,
+            serialize_pubnonce(aggnonce).hex().upper(),
+            format_list([serialize_pk(p) for p in pks]),
+            format_list(msgs),
+            format_list([serialize_pubnonce(s[4]) for s in signers]),
+            format_list(psigs_bytes),
+            "TRUE" if expected_sig is not None else "FALSE",
+            expected_sig.hex().upper() if expected_sig is not None else "",
+            comment,
+        ))
+
+    psigs_bytes = [p.to_bytes() for p in psigs]
+    write_row(0, psigs_bytes, serialize_sig(sig), "Two signers")
+    write_row(1, [psigs_bytes[0], bytes_from_int(n)], None,
+              "Signer 1's psig is n (out of range)")
+    write_row(2, [bytes([0xff] * 32), psigs_bytes[1]], None,
+              "Signer 0's psig is 2^256 - 1")
 
 
 def gen_verify_vectors(f):
@@ -589,6 +626,10 @@ if __name__ == "__main__":
     print(f"Generating {SIGN_ERROR_VECTORS}")
     with open(SIGN_ERROR_VECTORS, "w", newline="", encoding="utf-8") as f:
         gen_sign_error_vectors(f)
+
+    print(f"Generating {SIG_AGG_VECTORS}")
+    with open(SIG_AGG_VECTORS, "w", newline="", encoding="utf-8") as f:
+        gen_sig_agg_vectors(f)
 
     print(f"Generating {VERIFY_VECTORS}")
     with open(VERIFY_VECTORS, "w", newline="", encoding="utf-8") as f:
